@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>VR Demo iPhone</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#000; height:100%; touch-action:none; }
+  #canvas-wrap { position:fixed; inset:0; }
+  #startBtn {
+    position:fixed; inset:0; z-index:10; background:#111; color:#fff;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    font-family:sans-serif; font-size:18px; text-align:center; gap:16px;
+  }
+  #startBtn button {
+    padding:16px 32px; font-size:18px; border-radius:8px; border:none;
+    background:#4a90e2; color:#fff;
+  }
+  #rotateWarn {
+    position:fixed; inset:0; z-index:20; background:#000; color:#fff;
+    display:none; align-items:center; justify-content:center; font-family:sans-serif; text-align:center; padding:20px;
+  }
+  @media (orientation: portrait) { #rotateWarn { display:flex; } #canvas-wrap { display:none; } }
+</style>
+</head>
+<body>
+
+<div id="rotateWarn">Tourne ton iPhone en mode paysage 📱↻</div>
+
+<div id="startBtn">
+  <div>Démo VR cardboard<br>(à tester sur iPhone, en paysage, dans Safari)</div>
+  <button id="go">Activer la caméra VR</button>
+</div>
+
+<div id="canvas-wrap"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+let scene, camera, renderer, roomGroup, character;
+let orientation = { alpha: 0, beta: 0, gamma: 0 };
+let baseAlpha = null; // pour recaler le "devant" au démarrage
+
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x202030);
+
+  camera = new THREE.Object3D(); // rig, contient les 2 vraies caméras stéréo
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.getElementById('canvas-wrap').appendChild(renderer.domElement);
+
+  // --- Salle simple (sol + murs) ---
+  roomGroup = new THREE.Group();
+  const floorGeo = new THREE.PlaneGeometry(10, 10);
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x555566 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  roomGroup.add(floor);
+
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x333344, side: THREE.DoubleSide });
+  const wallGeo = new THREE.PlaneGeometry(10, 4);
+  const backWall = new THREE.Mesh(wallGeo, wallMat);
+  backWall.position.set(0, 2, -5);
+  roomGroup.add(backWall);
+  const leftWall = new THREE.Mesh(wallGeo, wallMat);
+  leftWall.position.set(-5, 2, 0);
+  leftWall.rotation.y = Math.PI / 2;
+  roomGroup.add(leftWall);
+  const rightWall = leftWall.clone();
+  rightWall.position.set(5, 2, 0);
+  roomGroup.add(rightWall);
+
+  // --- Personnage placeholder (un cube, à remplacer par un .glb Blender) ---
+  const charGeo = new THREE.BoxGeometry(0.6, 1.6, 0.4);
+  const charMat = new THREE.MeshStandardMaterial({ color: 0xe27d4a });
+  character = new THREE.Mesh(charGeo, charMat);
+  character.position.set(0, 0.8, -2.5);
+  roomGroup.add(character);
+
+  scene.add(roomGroup);
+
+  const light = new THREE.HemisphereLight(0xffffff, 0x222233, 1.2);
+  scene.add(light);
+  const point = new THREE.PointLight(0xffffff, 0.6);
+  point.position.set(0, 3, 0);
+  scene.add(point);
+
+  scene.add(camera);
+  camera.position.set(0, 1.6, 0); // hauteur des yeux
+
+  window.addEventListener('resize', onResize);
+}
+
+function onResize() {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// --- Gestion gyroscope (iOS nécessite une permission explicite) ---
+function handleOrientation(e) {
+  orientation.alpha = e.alpha || 0;
+  orientation.beta = e.beta || 0;
+  orientation.gamma = e.gamma || 0;
+  if (baseAlpha === null) baseAlpha = orientation.alpha;
+}
+
+function requestGyroPermission() {
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // iOS 13+
+    DeviceOrientationEvent.requestPermission()
+      .then(state => {
+        if (state === 'granted') {
+          window.addEventListener('deviceorientation', handleOrientation, true);
+          startExperience();
+        } else {
+          alert("Permission gyroscope refusée.");
+        }
+      })
+      .catch(console.error);
+  } else {
+    // Android / anciens navigateurs
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    startExperience();
+  }
+}
+
+function startExperience() {
+  document.getElementById('startBtn').style.display = 'none';
+  if (!renderer) initScene();
+  requestAnimationFrame(animate);
+}
+
+// Applique l'orientation du téléphone au rig caméra
+function updateCameraFromOrientation() {
+  const alpha = THREE.MathUtils.degToRad(orientation.alpha || 0);
+  const beta = THREE.MathUtils.degToRad(orientation.beta || 0);
+  const gamma = THREE.MathUtils.degToRad(orientation.gamma || 0);
+
+  const euler = new THREE.Euler();
+  euler.set(beta, alpha, -gamma, 'YXZ');
+  camera.quaternion.setFromEuler(euler);
+
+  // Correction : device orientation Z pointe vers le haut, on veut Y "up" pour la scène
+  const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+  camera.quaternion.multiplyQuaternions(q1, camera.quaternion);
+}
+
+// --- Rendu stéréo split-screen ---
+const eyeSeparation = 0.064; // distance interpupillaire moyenne (m)
+
+function renderStereo() {
+  const width = window.innerWidth / 2;
+  const height = window.innerHeight;
+
+  const leftCam = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+  const rightCam = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+
+  leftCam.quaternion.copy(camera.quaternion);
+  rightCam.quaternion.copy(camera.quaternion);
+
+  const offset = new THREE.Vector3(eyeSeparation / 2, 0, 0).applyQuaternion(camera.quaternion);
+  leftCam.position.copy(camera.position).sub(offset);
+  rightCam.position.copy(camera.position).add(offset);
+
+  renderer.setScissorTest(true);
+
+  renderer.setViewport(0, 0, width, height);
+  renderer.setScissor(0, 0, width, height);
+  renderer.render(scene, leftCam);
+
+  renderer.setViewport(width, 0, width, height);
+  renderer.setScissor(width, 0, width, height);
+  renderer.render(scene, rightCam);
+
+  renderer.setScissorTest(false);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  updateCameraFromOrientation();
+  character.rotation.y += 0.01; // petite anim pour voir que ça tourne
+  renderStereo();
+}
+
+document.getElementById('go').addEventListener('click', requestGyroPermission);
+</script>
+</body>
+</html>
